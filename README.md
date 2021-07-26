@@ -12,4 +12,3 @@ The C++ implementation should work cross-platform, but I've configured CMakeList
  4. Create a `build` folder here and run `cmake . -B build`
  5. Run `cmake --build build --config Release --target ALL_BUILD -j 10 --`
  6. Find `opencv_world453.dll` in the OpenCV build folder and copy it into `build/Release/`
- 7. 

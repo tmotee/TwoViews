@@ -21,7 +21,7 @@ const float samplePitch = 1.6f; // Approx pixels per step
 const int maxKeypoints = 10000;
 
 const float epipoleTolerance = 2;
-const float disparityOutlierPct = 0.01;
+const float disparityOutlierPct = 0.01f;
 
 const char* window_name = "TESTING WINDOW";
 

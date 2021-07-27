@@ -20,7 +20,7 @@ const float samplePitch = 1.6f; // Approx pixels per step
 
 const float expansionGap = 1.0f; // Multiples of the step size
 
-const int maxKeypoints = 1000;
+const int maxKeypoints = 10000;
 
 const float epipoleTolerance = 2;
 const float disparityOutlierPct = 0.01f;
@@ -246,9 +246,9 @@ void optimizePatch(Ptr<DownhillSolver> optimizer, float f, Patch &patch) {
     x.at<double>(3, 0) = patch.alpha;
     x.at<double>(4, 0) = patch.beta;
 
-    cout << "Optimizing patch initial " << x << endl;
+    // cout << "Optimizing patch initial " << x << endl;
     optimizer->minimize(x);
-    cout << "Final " << x << endl;
+    // cout << "Final " << x << endl;
 
     patch.center[0] = (float)x.at<double>(0, 0);
     patch.center[1] = (float)x.at<double>(1, 0);
@@ -452,7 +452,10 @@ int main( int argc, const char** argv )
 
     optimizePatches(expandedPatches);
 
+    expandedPatches = filterPatches(reprojErr, expandedPatches);
     patches.insert(patches.end(), expandedPatches.begin(), expandedPatches.end());
+    cout << "Filtered to " << patches.size() << " remaining patches" << endl;
+
     exportWithName(patches, "optimized2.ply");
 
     Mat annotatedImage;

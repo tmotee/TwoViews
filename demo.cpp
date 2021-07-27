@@ -399,18 +399,9 @@ bool readInputFiles(Mat &leftImage, Mat &rightImage, Mat& leftCameraMatrix, Mat&
     return true;
 }
 
-int main( int argc, const char** argv )
-{
-    Mat leftImage, rightImage, leftCameraMatrix, rightCameraMatrix;
-    float baseline;
-    if (!readInputFiles(leftImage, rightImage, leftCameraMatrix, rightCameraMatrix, baseline)) {
-        return -1;
-    }
-    // Assuming focal lengths are the same for both cameras and in both dimensions
-    float f = leftCameraMatrix.at<float>(0, 0);
-
+void detectAndMatchFeatures(const Mat &leftImage, const Mat &rightImage, 
+  vector<KeyPoint> &leftKeypoints, vector<KeyPoint> &rightKeypoints, vector<DMatch> &matches) {
     Ptr<FeatureDetector> detector = ORB::create(maxKeypoints);
-    vector<KeyPoint> leftKeypoints, rightKeypoints;
     detector->detect(leftImage, leftKeypoints);
     detector->detect(rightImage, rightKeypoints);
     cout << "Detected " << leftKeypoints.size() << " kepoints in left image and " << rightKeypoints.size() << " in right image" << endl; 
@@ -423,20 +414,33 @@ int main( int argc, const char** argv )
     
     // TODO: Search along epipolar line
     Ptr<DescriptorMatcher> matcher = BFMatcher::create(NORM_HAMMING);
-    vector<DMatch> matches;
     matcher->match(leftDescriptors, rightDescriptors, matches);
+}
 
-    cout << "Found " << matches.size() << " matches" << endl;
+int main( int argc, const char** argv )
+{
+    Mat leftImage, rightImage, leftCameraMatrix, rightCameraMatrix;
+    float baseline;
+    if (!readInputFiles(leftImage, rightImage, leftCameraMatrix, rightCameraMatrix, baseline)) {
+        return -1;
+    }
+    // Assuming focal lengths are the same for both cameras and in both dimensions
+    float f = leftCameraMatrix.at<float>(0, 0);
+
+    vector<KeyPoint> leftKeypoints, rightKeypoints;
+    vector<DMatch> matches;
+    detectAndMatchFeatures(leftImage, rightImage, leftKeypoints, rightKeypoints, matches);
+    cout << "Found " << matches.size() << " keypoint matches" << endl;
 
     vector<Patch> patches;
     triangulatePatches(leftCameraMatrix, leftKeypoints, rightCameraMatrix, rightKeypoints, matches, baseline, patches);
-
     cout << "Triangulated " << patches.size() << " points" << endl;
 
     auto exportWithName = [&](const vector<Patch> &toExport, string filename) {
         ofstream outFile(filename);
         if (!outFile.is_open()) {
-            cout << "Couldn't open output file for writing" << endl;
+            cout << "Couldn't open output file " << filename << " for writing" << endl;
+            return;
         }
         exportPLY(leftCameraMatrix, leftImage, rightCameraMatrix, rightImage, baseline, toExport, outFile);
         outFile.close();
@@ -466,6 +470,7 @@ int main( int argc, const char** argv )
 
     vector<Patch> expandedPatches = expandPatches(patches, f);
     cout << "Expansion added " << expandedPatches.size() << " patches" << endl;
+    
     exportWithName(expandedPatches, "expanded.ply");
 
     optimizePatches(expandedPatches);

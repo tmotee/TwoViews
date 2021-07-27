@@ -8,7 +8,7 @@ The reconstruction below was generated from the "Crusade" image pair from [this 
 
 ![Final reconstruction](/sample/optimized2.png)
 
-The patch expansion and optimization process results in a much denser point cloud, compared to the initial triangulation below:
+The patch expansion and optimization process produces a more complete point cloud, compared to the initial feature triangulation below:
 
 ![Initial triangulation](/sample/initial.png)
 

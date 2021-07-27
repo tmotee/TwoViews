@@ -4,7 +4,7 @@ This is an exercise to check my understanding of photogrammetry concepts and C++
 
 Example
 =======
-The reconstruction below was generated from the "Crusade" image pair from the [dataset](https://vision.middlebury.edu/stereo/data/scenes2014/). The point cloud file is included in the sample/ folder.
+The reconstruction below was generated from the "Crusade" image pair from [this dataset](https://vision.middlebury.edu/stereo/data/scenes2014/). The point cloud file is included in the sample/ folder.
 
 ![Final reconstruction](/sample/optimized2.png)
 

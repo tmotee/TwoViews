@@ -1,6 +1,6 @@
 Two Views
 =========
-This is an exercise to check my understanding of photogrammetry concepts and C++ in general. I've implemented something akin to PMVS2 for the special case of rectified stereo images from the Middlebury Stereo Evaluation dataset. Feel free to reuse this code in any way you want.
+This is an exercise to check my understanding of photogrammetry concepts and C++ in general. I've implemented something akin to [PMVS2](https://www.di.ens.fr/pmvs/) for the special case of rectified stereo images from the Middlebury Stereo Evaluation dataset. Feel free to reuse this code in any way you want.
 
 Example
 -------

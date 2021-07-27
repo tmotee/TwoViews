@@ -8,11 +8,11 @@ The reconstruction below was generated from the "Crusade" image pair from [this 
 
 ![Final reconstruction](/sample/optimized2.png)
 
-The patch expansion and optimization process results in a much denser point cloud, compared to the initial triangulation:
+The patch expansion and optimization process results in a much denser point cloud, compared to the initial triangulation below:
 
 ![Initial triangulation](/sample/initial.png)
 
-The effect of the optimization step can be seen in the top view of the reddish planar surface, where the point cloud becomes more tightly aligned (right):
+The effect of the optimization step can be seen in the top view of the reddish planar surface, where the point cloud becomes more tightly aligned. These two views were rendered from exactly the same perspective (left: initial triangulation, right: after optimization):
 
 ![Top view comparison, before and after optimization](/sample/initial_vs_optimized1.png)
 

@@ -31,12 +31,13 @@ const float expansionGap = 1.0f;
 const int maxKeypoints = 10000;
 
 // Tolerance (pixels) for matching features between images.
-const float epipoleTolerance = 2;
+const float epipolarTolerance = 2;
 // The extreme percentiles of disparity values to discard.
 const float disparityOutlierPct = 0.01f;
 // The upper percentile of reprojection error values to discard.
 const float reprojectionOutlierPct = 0.1f;
 
+// A patch is an oriented rectangular grid of sample points.
 struct Patch {
     Vec3f center;
     // Normal direction of the patch encoded as Euler angles (y-x-z) but with zero
@@ -57,6 +58,7 @@ float sampleStepDist(const Patch &patch, float f) {
     return samplePitch * patch.center[2] / f;
 }
 
+// For format specification, see: https://vision.middlebury.edu/stereo/data/scenes2014/
 Mat parseCameraMatrix(string line) {
     size_t start = line.find('[') + 1;
     size_t end = line.rfind(']') - 1;
@@ -69,10 +71,60 @@ Mat parseCameraMatrix(string line) {
     return cameraMatrix;
 }
 
+// Parse a floating point value given as a string "some-attribute=123.45"
 float parseFloat(string line) {
     float value;
     sscanf_s(line.c_str(), "%*[^=]=%f", &value);
     return value;
+}
+
+bool readInputFiles(Mat &leftImage, Mat &rightImage, Mat& leftCameraMatrix, Mat& rightCameraMatrix, float &baseline) {
+    leftImage = imread(samples::findFile(inputDir + "/im0.png"), IMREAD_COLOR);
+    rightImage = imread(samples::findFile(inputDir + "/im1.png"), IMREAD_COLOR);
+    if(leftImage.empty() || rightImage.empty())
+    {
+        cout << "Cannot read image files" << endl;
+        return false;
+    }
+
+    ifstream calibFile(inputDir + "/calib.txt");
+    if (!calibFile.is_open()) {
+        cout << "Cannot read calibration" << endl;
+        return false;
+    }
+
+    string line;
+    getline(calibFile, line);
+    leftCameraMatrix = parseCameraMatrix(line);
+    getline(calibFile, line);
+    rightCameraMatrix = parseCameraMatrix(line);
+
+    cout << "cam0:" << endl << leftCameraMatrix << endl << "cam1:" << endl << rightCameraMatrix << endl;
+
+    getline(calibFile, line); // Skip one line
+    getline(calibFile, line);
+    baseline = parseFloat(line);
+    cout << "Camera baseline: " << baseline << endl;
+
+    return true;
+}
+
+void detectAndMatchFeatures(const Mat &leftImage, const Mat &rightImage, 
+  vector<KeyPoint> &leftKeypoints, vector<KeyPoint> &rightKeypoints, vector<DMatch> &matches) {
+    Ptr<FeatureDetector> detector = ORB::create(maxKeypoints);
+    detector->detect(leftImage, leftKeypoints);
+    detector->detect(rightImage, rightKeypoints);
+    cout << "Detected " << leftKeypoints.size() << " kepoints in left image and " << rightKeypoints.size() << " in right image" << endl; 
+
+    Mat leftDescriptors, rightDescriptors;
+    detector->compute(leftImage, leftKeypoints, leftDescriptors);
+    detector->compute(rightImage, rightKeypoints, rightDescriptors);
+
+    cout << "Computed desciptors: " << leftDescriptors.size() << " and " << rightDescriptors.size() << endl;
+    
+    // TODO: Search along epipolar line
+    Ptr<DescriptorMatcher> matcher = BFMatcher::create(NORM_HAMMING);
+    matcher->match(leftDescriptors, rightDescriptors, matches);
 }
 
 void triangulatePatches(const Mat &camMatrix1, const vector<KeyPoint> &keypoints1, 
@@ -85,15 +137,25 @@ void triangulatePatches(const Mat &camMatrix1, const vector<KeyPoint> &keypoints
     float cx2 = camMatrix2.at<float>(0, 2);
     float cy2 = camMatrix2.at<float>(1, 2);
 
+    auto alignment = [&](const DMatch &match) {
+        const Point2f &p1 = keypoints1[match.queryIdx].pt;
+        const Point2f &p2 = keypoints2[match.trainIdx].pt;
+        return abs((p1.y - cy1) - (p2.y - cy2));
+    };
+
+    auto disparity = [&](const DMatch &match) {
+        const Point2f &p1 = keypoints1[match.queryIdx].pt;
+        const Point2f &p2 = keypoints2[match.trainIdx].pt;
+        return (p1.x - cx1) - (p2.x - cx2);
+    };
+
     vector<float> disparities;
     disparities.reserve(matches.size());
     for (DMatch match : matches) {
-        const Point2f &p1 = keypoints1[match.queryIdx].pt;
-        const Point2f &p2 = keypoints2[match.trainIdx].pt;
-        if (abs((p1.y - cy1) - (p2.y - cy2)) > epipoleTolerance) {
+        if (abs(alignment(match)) > epipolarTolerance) { // Reject matches not along epipolar line
             continue;
         }
-        disparities.push_back((p1.x - cx1) - (p2.x - cx2));
+        disparities.push_back(disparity(match));
     }
     sort(disparities.begin(), disparities.end());
     float lowPct = disparities[(int)floor(disparities.size() * disparityOutlierPct)];
@@ -102,30 +164,20 @@ void triangulatePatches(const Mat &camMatrix1, const vector<KeyPoint> &keypoints
     cout << "Keeping disparities between " << lowPct << " and " << highPct << endl;
 
     for (DMatch match : matches) {
+        float d = disparity(match);
+        if (abs(alignment(match)) > epipolarTolerance || d < lowPct || d > highPct) {
+            continue;
+        }
+
         const Point2f &p1 = keypoints1[match.queryIdx].pt;
         const Point2f &p2 = keypoints2[match.trainIdx].pt;
-
-        // Reject matches not along epipole
-        if (abs((p1.y - cy1) - (p2.y - cy2)) > epipoleTolerance) {
-            //cout << "Exceeded tolerance: " << p1 << ", " << p2 << " with cy1=" << cy1 << ", cy2=" << cy2 << endl;
-            continue;
-        }
-
-        // Images are rectified, so depth is given by stereo disparity
-        float disparity = (p1.x - cx1) - (p2.x - cx2);
-        if (disparity < lowPct || disparity > highPct) { // Reject outliers
-            continue;
-        }
-        //cout << "Disparity between " << p1 << " and " << p2 << " is " << disparity << endl;
-        float depth = baseline * f / disparity;
+        float z = baseline * f / d;
 
         Vec3f center;
-        center[0] = (p1.x - cx1) * depth / f;
-        center[1] = (p1.y - cy1) * depth / f;
-        center[2] = depth;
+        center[0] = (p1.x - cx1) * z / f;
+        center[1] = (p1.y - cy1) * z / f;
+        center[2] = z;
         patches.push_back(Patch{center, 0, 0});
-
-        //cout << "Pixel " << p1 << " triangulated to " << center << endl;
     }
 }
 
@@ -368,55 +420,6 @@ void exportPLY(const Mat &camMatrix1, const Mat &image1, const Mat &camMatrix2, 
     }
 }
 
-bool readInputFiles(Mat &leftImage, Mat &rightImage, Mat& leftCameraMatrix, Mat& rightCameraMatrix, float &baseline) {
-    leftImage = imread(samples::findFile(inputDir + "/im0.png"), IMREAD_COLOR);
-    rightImage = imread(samples::findFile(inputDir + "/im1.png"), IMREAD_COLOR);
-    if(leftImage.empty() || rightImage.empty())
-    {
-        cout << "Cannot read image files" << endl;
-        return false;
-    }
-
-    ifstream calibFile(inputDir + "/calib.txt");
-    if (!calibFile.is_open()) {
-        cout << "Cannot read calibration" << endl;
-        return false;
-    }
-
-    string line;
-    getline(calibFile, line);
-    leftCameraMatrix = parseCameraMatrix(line);
-    getline(calibFile, line);
-    rightCameraMatrix = parseCameraMatrix(line);
-
-    cout << "cam0:" << endl << leftCameraMatrix << endl << "cam1:" << endl << rightCameraMatrix << endl;
-
-    getline(calibFile, line); // Skip one line
-    getline(calibFile, line);
-    baseline = parseFloat(line);
-    cout << "Camera baseline: " << baseline << endl;
-
-    return true;
-}
-
-void detectAndMatchFeatures(const Mat &leftImage, const Mat &rightImage, 
-  vector<KeyPoint> &leftKeypoints, vector<KeyPoint> &rightKeypoints, vector<DMatch> &matches) {
-    Ptr<FeatureDetector> detector = ORB::create(maxKeypoints);
-    detector->detect(leftImage, leftKeypoints);
-    detector->detect(rightImage, rightKeypoints);
-    cout << "Detected " << leftKeypoints.size() << " kepoints in left image and " << rightKeypoints.size() << " in right image" << endl; 
-
-    Mat leftDescriptors, rightDescriptors;
-    detector->compute(leftImage, leftKeypoints, leftDescriptors);
-    detector->compute(rightImage, rightKeypoints, rightDescriptors);
-
-    cout << "Computed desciptors: " << leftDescriptors.size() << " and " << rightDescriptors.size() << endl;
-    
-    // TODO: Search along epipolar line
-    Ptr<DescriptorMatcher> matcher = BFMatcher::create(NORM_HAMMING);
-    matcher->match(leftDescriptors, rightDescriptors, matches);
-}
-
 int main( int argc, const char** argv )
 {
     Mat leftImage, rightImage, leftCameraMatrix, rightCameraMatrix;
@@ -470,7 +473,7 @@ int main( int argc, const char** argv )
 
     vector<Patch> expandedPatches = expandPatches(patches, f);
     cout << "Expansion added " << expandedPatches.size() << " patches" << endl;
-    
+
     exportWithName(expandedPatches, "expanded.ply");
 
     optimizePatches(expandedPatches);

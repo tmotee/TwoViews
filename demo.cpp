@@ -181,13 +181,12 @@ void triangulatePatches(const Mat &camMatrix1, const vector<KeyPoint> &keypoints
     }
 }
 
+// Generate sampling points in world space for the given patch.
 void getSampleLocations(float f, const Patch &patch, Vec3f sampleLocations[samplesPerPatch]) {
     float pitch = sampleStepDist(patch, f);
     Vec3f patchX = patchXAxis(patch) * pitch;
     Vec3f patchY = patchYAxis(patch) * pitch;
 
-    // cout << "Using patch step " << step << " and patchX " << patchX << " and patchY " << patchY << endl;
-    // cout << "Patch center is " << patch.center << endl;
     for (int i = -patchSteps; i <= patchSteps; i++) {
         for (int j = -patchSteps; j <= patchSteps; j++) {
             sampleLocations[(i + patchSteps) * patchSize + (j + patchSteps)] = patch.center + i * patchX + j * patchY;
@@ -195,6 +194,7 @@ void getSampleLocations(float f, const Patch &patch, Vec3f sampleLocations[sampl
     }
 }
 
+// Sample pixel colors by projecting the given sample locations onto the given camera image.
 void sample(const Mat &camMatrix, const Mat &image, float baseline, 
     const Vec3f sampleLocations[samplesPerPatch], Vec3f sampledColors[samplesPerPatch]) {
     Vec3f baselineOffset(baseline, 0, 0);
@@ -205,8 +205,6 @@ void sample(const Mat &camMatrix, const Mat &image, float baseline,
         Mat p = camMatrix * X;
         float u = p.at<float>(0, 0) / p.at<float>(2, 0);
         float v = p.at<float>(1, 0) / p.at<float>(2, 0);
-
-        //cout << "Point " << X << " projected to " << u << ", " << v << endl;
 
         // Linear interpolation
         float u1 = floor(u);
@@ -230,16 +228,15 @@ void sample(const Mat &camMatrix, const Mat &image, float baseline,
         if (v2 < 0) { v2 += imageSize.height; }
         else if (v2 >= imageSize.height) { v2 -= imageSize.height; }
 
-        //cout << "Interp pixels " << u1 << "," << v1 << "," << u2 << "," << v2 << " a = " << a << " b = " << b << endl;
-
         sampledColors[i] = image.at<Vec3b>((int)floor(v1), (int)floor(u1)) * (1 - b) * (1 - a) + 
             image.at<Vec3b>((int)floor(v2), (int)floor(u1)) * b * (1 - a) + 
             image.at<Vec3b>((int)floor(v1), (int)floor(u2)) * (1 - b) * a + 
             image.at<Vec3b>((int)floor(v2), (int)floor(u2)) * b * a;
-            //cout << "Point " << patch.center << " projected to " << p1 << endl;
     }
 }
 
+// Calculates the left/right difference in pixel colors for the sample points on a patch by
+// projecting them onto the left and right images.
 class ReprojectionErrorF:public MinProblemSolver::Function{
     const Mat &leftCamMatrix, &leftImage, &rightCamMatrix, &rightImage;
     float baseline, f;
@@ -262,22 +259,11 @@ public:
         sample(leftCamMatrix, leftImage, 0, sampleLocations, sampledColorsLeft);
         sample(rightCamMatrix, rightImage, baseline, sampleLocations, sampledColorsRight);
 
-        //cout << "Sampled left: " << endl;
-        // for (int i = 0; i < samplesPerPatch; i++) {
-        //     cout << sampledColorsLeft[i] << endl;
-        // }
-        //cout << "Sampled right: " << endl;
-        // for (int i = 0; i < samplesPerPatch; i++) {
-        //     cout << sampledColorsRight[i] << endl;
-        // }
-
         double result = 0;
         for (int i = 0; i < samplesPerPatch; i++) {
             result += norm(sampledColorsLeft[i] - sampledColorsRight[i]);
-            //cout << "Vector norm " << i << " = " << sqrt(sampledColorsLeft[i].dot(sampledColorsRight[i])) << endl;
         }
 
-        //cout << "Calc result: " << result << endl;
         return result;
     }
 
@@ -287,6 +273,8 @@ public:
     }
 };
 
+// Set up and run nonlinear optimization on a single patch, updating the patch with
+// the final optimized result.
 void optimizePatch(Ptr<DownhillSolver> optimizer, float f, Patch &patch) {
     float linearStep = patch.center[2] / f;
     float depthStep = patch.center[2] / 1000;
@@ -305,9 +293,7 @@ void optimizePatch(Ptr<DownhillSolver> optimizer, float f, Patch &patch) {
     x.at<double>(3, 0) = patch.alpha;
     x.at<double>(4, 0) = patch.beta;
 
-    // cout << "Optimizing patch initial " << x << endl;
     optimizer->minimize(x);
-    // cout << "Final " << x << endl;
 
     patch.center[0] = (float)x.at<double>(0, 0);
     patch.center[1] = (float)x.at<double>(1, 0);
@@ -316,6 +302,7 @@ void optimizePatch(Ptr<DownhillSolver> optimizer, float f, Patch &patch) {
     patch.beta = (float)x.at<double>(4, 0);
 }
 
+// Return a new list of patches after removing patches that have high reprojection error.
 vector<Patch> filterPatches(ReprojectionErrorF errFn, vector<Patch> patches) {
     vector<double> reprojErrs;
     reprojErrs.reserve(patches.size());
@@ -340,11 +327,12 @@ vector<Patch> filterPatches(ReprojectionErrorF errFn, vector<Patch> patches) {
     return filteredPatches;
 }
 
+// Generate new patches close to the given ones, under the assumption that the surface is
+// locally flat.
 vector<Patch> expandPatches(vector<Patch> patches, float f) {
     vector<Patch> candidatePatches;
     candidatePatches.reserve(patches.size() * 8);
     
-    // Generate a new patch in each of the eight cardinal directions from the originals
     for (Patch patch : patches) {
         float offset = sampleStepDist(patch, f) * (patchSize + expansionGap);
         Vec3f X = patchXAxis(patch) * offset, Y = patchYAxis(patch) * offset;
@@ -367,13 +355,11 @@ vector<Patch> expandPatches(vector<Patch> patches, float f) {
         
         for (Patch original : patches) {
             if (norm(candidate.center - original.center) < minDist) {
-                // cout << "Candidate too close to original at " << original.center << endl;
                 return false;
             } 
         }
         for (Patch added : newPatches) {
             if (norm(candidate.center - added.center) < minDist) {
-                // cout << "Candidate too close to added at " << added.center << endl;
                 return false;
             } 
         }
@@ -382,7 +368,6 @@ vector<Patch> expandPatches(vector<Patch> patches, float f) {
     };
 
     for (Patch candidate : candidatePatches) {
-        // cout << "Checking patch at " << candidate.center << endl;
         if (sufficientlySpaced(candidate)) {
             newPatches.push_back(candidate);
         }
@@ -390,9 +375,9 @@ vector<Patch> expandPatches(vector<Patch> patches, float f) {
     return newPatches;
 }
 
-void exportPLY(const Mat &camMatrix1, const Mat &image1, const Mat &camMatrix2, const Mat &image2, 
-    float baseline, vector<Patch> patches, ofstream &outFile) {
-    float f = camMatrix1.at<float>(0, 0);
+// Export patches as a point cloud file.
+void exportPLY(const Mat &leftCameraMatrix, const Mat &leftImage, vector<Patch> patches, ofstream &outFile) {
+    float f = leftCameraMatrix.at<float>(0, 0);
 
     outFile << "ply" << endl
     << "format ascii 1.0" << endl
@@ -409,8 +394,8 @@ void exportPLY(const Mat &camMatrix1, const Mat &image1, const Mat &camMatrix2, 
     Vec3f sampleLocations[samplesPerPatch];
     for (const Patch &patch : patches) {
         getSampleLocations(f, patch, sampleLocations);
-        //sample(camMatrix1, image1, 0, sampleLocations, sampledColors);
-        sample(camMatrix2, image2, baseline, sampleLocations, sampledColors);
+        // TODO: We could sample both images and take an average.
+        sample(leftCameraMatrix, leftImage, 0, sampleLocations, sampledColors);
 
         for (int i = 0; i < samplesPerPatch; i++) {
             const Vec3f &X = sampleLocations[i];
@@ -445,7 +430,7 @@ int main( int argc, const char** argv )
             cout << "Couldn't open output file " << filename << " for writing" << endl;
             return;
         }
-        exportPLY(leftCameraMatrix, leftImage, rightCameraMatrix, rightImage, baseline, toExport, outFile);
+        exportPLY(leftCameraMatrix, leftImage, toExport, outFile);
         outFile.close();
         cout << "Exported to " << filename << endl;
     };

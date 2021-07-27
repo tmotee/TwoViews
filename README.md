@@ -2,6 +2,20 @@ Two Views
 =========
 This is an exercise to check my understanding of photogrammetry concepts and C++ in general. I've implemented something akin to PMVS2 for the special case of rectified stereo images from the Middlebury Stereo Evaluation dataset. Feel free to reuse this code in any way you want.
 
+Example
+=======
+The reconstruction below was generated from the "Crusade" image pair from the [dataset](https://vision.middlebury.edu/stereo/data/scenes2014/). The point cloud file is included in the sample/ folder.
+
+![Final reconstruction](/sample/optimized2.png)
+
+The patch expansion and optimization process results in a much denser point cloud, compared to the initial triangulation:
+
+![Initial triangulation](/sample/initial.png)
+
+The effect of the optimization step can be seen in the top view of the reddish planar surface, where the point cloud becomes more tightly aligned (right):
+
+![Top view comparison, before and after optimization](/sample/initial_vs_optimized1.png)
+
 Setup Notes
 ===========
 The C++ implementation should work cross-platform, but I've configured CMakeLists.txt for Windows.

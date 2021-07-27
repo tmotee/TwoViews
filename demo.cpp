@@ -18,10 +18,13 @@ const int patchSize = 2 * patchSteps + 1;
 const int samplesPerPatch = patchSize * patchSize;
 const float samplePitch = 1.6f; // Approx pixels per step
 
-const int maxKeypoints = 10000;
+const float expansionGap = 1.0f; // Multiples of the step size
+
+const int maxKeypoints = 1000;
 
 const float epipoleTolerance = 2;
 const float disparityOutlierPct = 0.01f;
+const float reprojectionOutlierPct = 0.1f;
 
 const char* window_name = "TESTING WINDOW";
 
@@ -41,6 +44,10 @@ Vec3f patchXAxis(const Patch &patch) {
 
 Vec3f patchYAxis(const Patch &patch) {
     return Vec3f(sin(patch.beta) * sin(patch.alpha), cos(patch.beta), sin(patch.beta) * cos(patch.alpha));
+}
+
+float sampleStepDist(const Patch &patch, float f) {
+    return samplePitch * patch.center[2] / f;
 }
 
 Mat parseCameraMatrix(string line) {
@@ -116,7 +123,7 @@ void triangulatePatches(const Mat &camMatrix1, const vector<KeyPoint> &keypoints
 }
 
 void getSampleLocations(float f, const Patch &patch, Vec3f sampleLocations[samplesPerPatch]) {
-    float pitch = samplePitch * patch.center[2] / f;
+    float pitch = sampleStepDist(patch, f);
     Vec3f patchX = patchXAxis(patch) * pitch;
     Vec3f patchY = patchYAxis(patch) * pitch;
 
@@ -187,9 +194,7 @@ public:
         return 5; 
     }
 
-    double calc(const double* x) const {
-        Patch patch{Vec3f((float)x[0], (float)x[1], (float)x[2]), (float)x[3], (float)x[4]};
-
+    double calc(const Patch &patch) const {
         Vec3f sampleLocations[samplesPerPatch];
         Vec3f sampledColorsLeft[samplesPerPatch];
         Vec3f sampledColorsRight[samplesPerPatch];
@@ -215,6 +220,11 @@ public:
 
         //cout << "Calc result: " << result << endl;
         return result;
+    }
+
+    double calc(const double* x) const {
+        Patch patch{Vec3f((float)x[0], (float)x[1], (float)x[2]), (float)x[3], (float)x[4]};
+        return calc(patch);        
     }
 };
 
@@ -247,9 +257,82 @@ void optimizePatch(Ptr<DownhillSolver> optimizer, float f, Patch &patch) {
     patch.beta = (float)x.at<double>(4, 0);
 }
 
+vector<Patch> filterPatches(ReprojectionErrorF errFn, vector<Patch> patches) {
+    vector<double> reprojErrs;
+    reprojErrs.reserve(patches.size());
+
+    for (Patch patch : patches) {
+        reprojErrs.push_back(errFn.calc(patch));
+    }
+    sort(reprojErrs.begin(), reprojErrs.end());
+    double highPct = reprojErrs[(int)floor(reprojErrs.size() * (1 - reprojectionOutlierPct))];
+
+    vector<Patch> filteredPatches;
+    for (Patch patch : patches) {
+        if (errFn.calc(patch) <= highPct) {
+            filteredPatches.push_back(patch);
+        }
+    }
+
+    // TODO: Neighborhood "flatness" constraints? Could try a PCA on the positions of
+    // nearby points to try and determine the principal plane (if any) and reject off-plane
+    // points.
+
+    return filteredPatches;
+}
+
+vector<Patch> expandPatches(vector<Patch> patches, float f) {
+    vector<Patch> candidatePatches;
+    candidatePatches.reserve(patches.size() * 8);
+    
+    // Generate a new patch in each of the eight cardinal directions from the originals
+    for (Patch patch : patches) {
+        float offset = sampleStepDist(patch, f) * (patchSize + expansionGap);
+        Vec3f X = patchXAxis(patch) * offset, Y = patchYAxis(patch) * offset;
+
+        candidatePatches.push_back(Patch{patch.center + X + Y, patch.alpha, patch.beta});
+        candidatePatches.push_back(Patch{patch.center + X, patch.alpha, patch.beta});
+        candidatePatches.push_back(Patch{patch.center + X - Y, patch.alpha, patch.beta});
+        candidatePatches.push_back(Patch{patch.center - Y, patch.alpha, patch.beta});
+        candidatePatches.push_back(Patch{patch.center - X - Y, patch.alpha, patch.beta});
+        candidatePatches.push_back(Patch{patch.center - X, patch.alpha, patch.beta});
+        candidatePatches.push_back(Patch{patch.center - X + Y, patch.alpha, patch.beta});
+        candidatePatches.push_back(Patch{patch.center + Y, patch.alpha, patch.beta});
+    }
+
+    // Filter out patches that are too close to an existing one
+    // TODO: space partitioning to make this efficient
+    vector<Patch> newPatches;
+    auto sufficientlySpaced = [&](const Patch& candidate) {
+        float minDist = sampleStepDist(candidate, f) * patchSize;
+        
+        for (Patch original : patches) {
+            if (norm(candidate.center - original.center) < minDist) {
+                // cout << "Candidate too close to original at " << original.center << endl;
+                return false;
+            } 
+        }
+        for (Patch added : newPatches) {
+            if (norm(candidate.center - added.center) < minDist) {
+                // cout << "Candidate too close to added at " << added.center << endl;
+                return false;
+            } 
+        }
+
+        return true;
+    };
+
+    for (Patch candidate : candidatePatches) {
+        // cout << "Checking patch at " << candidate.center << endl;
+        if (sufficientlySpaced(candidate)) {
+            newPatches.push_back(candidate);
+        }
+    }
+    return newPatches;
+}
+
 void exportPLY(const Mat &camMatrix1, const Mat &image1, const Mat &camMatrix2, const Mat &image2, 
     float baseline, vector<Patch> patches, ofstream &outFile) {
-    // Assuming focal lengths are the same for both cameras and in both dimensions
     float f = camMatrix1.at<float>(0, 0);
 
     outFile << "ply" << endl
@@ -300,6 +383,8 @@ int main( int argc, const char** argv )
     getline(calibFile, line);
     Mat rightCameraMatrix = parseCameraMatrix(line);
     cout << "Read cam0 " << leftCameraMatrix << " cam1 " << rightCameraMatrix << endl;
+    // Assuming focal lengths are the same for both cameras and in both dimensions
+    float f = leftCameraMatrix.at<float>(0, 0);
 
     getline(calibFile, line); // Skip one line
     getline(calibFile, line);
@@ -328,34 +413,47 @@ int main( int argc, const char** argv )
     vector<Patch> patches;
     triangulatePatches(leftCameraMatrix, leftKeypoints, rightCameraMatrix, rightKeypoints, matches, baseline, patches);
 
-    // Mat sampledColors(patchSize, patchSize, CV_8UC3);
-    // for (Patch patch : patches) {
-    //     samplePatch(leftCameraMatrix, leftImage, rightCameraMatrix, rightImage, baseline, patch, sampledColors);
-    // }
-
     cout << "Triangulated " << patches.size() << " points" << endl;
 
-    ofstream initialFile("initial.ply");
-    if (!initialFile.is_open()) {
-        cout << "Couldn't open output file for writing" << endl;
-    }
-    exportPLY(leftCameraMatrix, leftImage, rightCameraMatrix, rightImage, baseline, patches, initialFile);
-    initialFile.close();
+    auto exportWithName = [&](const vector<Patch> &toExport, string filename) {
+        ofstream outFile(filename);
+        if (!outFile.is_open()) {
+            cout << "Couldn't open output file for writing" << endl;
+        }
+        exportPLY(leftCameraMatrix, leftImage, rightCameraMatrix, rightImage, baseline, toExport, outFile);
+        outFile.close();
+        cout << "Exported to " << filename << endl;
+    };
 
-    cout << "Exported initial PLY file" << endl;
+    exportWithName(patches, "initial.ply");
 
     ReprojectionErrorF reprojErr(leftCameraMatrix, leftImage, rightCameraMatrix, rightImage, baseline);
     optimizer->setFunction(makePtr<ReprojectionErrorF>(reprojErr));
-    for (Patch &patch : patches) {
-        optimizePatch(optimizer, leftCameraMatrix.at<float>(0, 0), patch);
-    }
 
-    ofstream optimizedFile("optimized.ply");
-    if (!optimizedFile.is_open()) {
-        cout << "Couldn't open output file for writing" << endl;
-    }
-    exportPLY(leftCameraMatrix, leftImage, rightCameraMatrix, rightImage, baseline, patches, optimizedFile);
-    optimizedFile.close();
+    auto optimizePatches = [&](vector<Patch> &toOptimize) {
+        for (int i = 0; i < toOptimize.size(); i++) {
+            optimizePatch(optimizer, f, toOptimize[i]);
+            cout << "\rOptimized patch " << i + 1 << " of " << toOptimize.size();
+        }
+        cout << endl;
+    };
+
+    optimizePatches(patches);
+
+    patches = filterPatches(reprojErr, patches);
+    cout << "Filtered to " << patches.size() << " remaining patches" << endl;
+
+    exportWithName(patches, "optimized1.ply");
+
+    vector<Patch> expandedPatches = expandPatches(patches, f);
+    cout << "Expansion added " << expandedPatches.size() << " patches" << endl;
+    //patches.insert(patches.end(), expandedPatches.begin(), expandedPatches.end());
+    exportWithName(expandedPatches, "expanded.ply");
+
+    optimizePatches(expandedPatches);
+
+    patches.insert(patches.end(), expandedPatches.begin(), expandedPatches.end());
+    exportWithName(patches, "optimized2.ply");
 
     Mat annotatedImage;
     //drawKeypoints(rightImage, rightKeypoints, annotatedImage);

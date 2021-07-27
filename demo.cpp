@@ -11,24 +11,31 @@
 using namespace cv;
 using namespace std;
 
-string inputDir = "../../MiddEval3/testH/Crusade";
+const string inputDir = "../../MiddEval3/testH/Crusade";
 
+// Number of samples in each direction from the middle of a patch.
 const int patchSteps = 2;
+// Number of samples along one edge of a patch.
 const int patchSize = 2 * patchSteps + 1;
 const int samplesPerPatch = patchSize * patchSize;
-const float samplePitch = 1.6f; // Approx pixels per step
+// Approx image space pixels between sample points. A value slightly greater
+// than 1 seems to work well, as each sample interpolates additional information
+// from neighbors.
+const float samplePitch = 1.6f;
 
-const float expansionGap = 1.0f; // Multiples of the step size
+// Gap (in multiples of samplePitch) to add between a patch and its children
+// during the expansion step.
+const float expansionGap = 1.0f;
 
+// Maximum number of feature points per image to use for initial triangulation.
 const int maxKeypoints = 10000;
 
+// Tolerance (pixels) for matching features between images.
 const float epipoleTolerance = 2;
+// The extreme percentiles of disparity values to discard.
 const float disparityOutlierPct = 0.01f;
+// The upper percentile of reprojection error values to discard.
 const float reprojectionOutlierPct = 0.1f;
-
-const char* window_name = "TESTING WINDOW";
-
-Ptr<DownhillSolver> optimizer = DownhillSolver::create();
 
 struct Patch {
     Vec3f center;
@@ -361,35 +368,46 @@ void exportPLY(const Mat &camMatrix1, const Mat &image1, const Mat &camMatrix2, 
     }
 }
 
-int main( int argc, const char** argv )
-{
-    Mat leftImage, rightImage;
+bool readInputFiles(Mat &leftImage, Mat &rightImage, Mat& leftCameraMatrix, Mat& rightCameraMatrix, float &baseline) {
     leftImage = imread(samples::findFile(inputDir + "/im0.png"), IMREAD_COLOR);
     rightImage = imread(samples::findFile(inputDir + "/im1.png"), IMREAD_COLOR);
     if(leftImage.empty() || rightImage.empty())
     {
         cout << "Cannot read image files" << endl;
-        return -1;
+        return false;
     }
 
     ifstream calibFile(inputDir + "/calib.txt");
     if (!calibFile.is_open()) {
         cout << "Cannot read calibration" << endl;
-        return -1;
+        return false;
     }
+
     string line;
     getline(calibFile, line);
-    Mat leftCameraMatrix = parseCameraMatrix(line);
+    leftCameraMatrix = parseCameraMatrix(line);
     getline(calibFile, line);
-    Mat rightCameraMatrix = parseCameraMatrix(line);
-    cout << "Read cam0 " << leftCameraMatrix << " cam1 " << rightCameraMatrix << endl;
-    // Assuming focal lengths are the same for both cameras and in both dimensions
-    float f = leftCameraMatrix.at<float>(0, 0);
+    rightCameraMatrix = parseCameraMatrix(line);
+
+    cout << "cam0:" << endl << leftCameraMatrix << endl << "cam1:" << endl << rightCameraMatrix << endl;
 
     getline(calibFile, line); // Skip one line
     getline(calibFile, line);
-    float baseline = parseFloat(line);
-    cout << "Read baseline " << baseline << endl;
+    baseline = parseFloat(line);
+    cout << "Camera baseline: " << baseline << endl;
+
+    return true;
+}
+
+int main( int argc, const char** argv )
+{
+    Mat leftImage, rightImage, leftCameraMatrix, rightCameraMatrix;
+    float baseline;
+    if (!readInputFiles(leftImage, rightImage, leftCameraMatrix, rightCameraMatrix, baseline)) {
+        return -1;
+    }
+    // Assuming focal lengths are the same for both cameras and in both dimensions
+    float f = leftCameraMatrix.at<float>(0, 0);
 
     Ptr<FeatureDetector> detector = ORB::create(maxKeypoints);
     vector<KeyPoint> leftKeypoints, rightKeypoints;
@@ -427,6 +445,7 @@ int main( int argc, const char** argv )
 
     exportWithName(patches, "initial.ply");
 
+    Ptr<DownhillSolver> optimizer = DownhillSolver::create();
     ReprojectionErrorF reprojErr(leftCameraMatrix, leftImage, rightCameraMatrix, rightImage, baseline);
     optimizer->setFunction(makePtr<ReprojectionErrorF>(reprojErr));
 
@@ -447,7 +466,6 @@ int main( int argc, const char** argv )
 
     vector<Patch> expandedPatches = expandPatches(patches, f);
     cout << "Expansion added " << expandedPatches.size() << " patches" << endl;
-    //patches.insert(patches.end(), expandedPatches.begin(), expandedPatches.end());
     exportWithName(expandedPatches, "expanded.ply");
 
     optimizePatches(expandedPatches);
@@ -457,15 +475,6 @@ int main( int argc, const char** argv )
     cout << "Filtered to " << patches.size() << " remaining patches" << endl;
 
     exportWithName(patches, "optimized2.ply");
-
-    Mat annotatedImage;
-    //drawKeypoints(rightImage, rightKeypoints, annotatedImage);
-    drawMatches(leftImage, leftKeypoints, rightImage, rightKeypoints, matches, annotatedImage);
-
-    // // Create a window
-    namedWindow(window_name, 1);
-    imshow(window_name, annotatedImage);    
-    waitKey(0);
 
     return 0;
 }
